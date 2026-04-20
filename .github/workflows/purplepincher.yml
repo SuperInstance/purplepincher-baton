@@ -1,0 +1,110 @@
+name: PurplePincher Shell Cycle
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize]
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  check-trust:
+    runs-on: ubuntu-latest
+    outputs:
+      tier: ${{ steps.trust.outputs.tier }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: trust
+        run: |
+          ACTOR="${{ github.actor }}"
+          if echo "${{ secrets.TRUSTED_AGENTS }}" | grep -q "$ACTOR"; then
+            echo "tier=1" >> $GITHUB_OUTPUT
+          elif grep -q "$ACTOR" .shell/proven-contributors.txt 2>/dev/null; then
+            echo "tier=2" >> $GITHUB_OUTPUT
+          else
+            echo "tier=3" >> $GITHUB_OUTPUT
+          fi
+
+  run-cycle:
+    needs: check-trust
+    if: needs.check-trust.outputs.tier != '3'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load context (the baton)
+        run: |
+          echo "=== Baton ==="
+          cat baton/CONTEXT-REFERENCE.md
+          echo ""
+          echo "=== Trust Tier: ${{ needs.check-trust.outputs.tier }} ==="
+
+      - name: Run PurplePincher agent cycle
+        env:
+          TIER: ${{ needs.check-trust.outputs.tier }}
+          TRIGGER: ${{ github.event_name }}
+          AGENT_NAME: "runner-${{ github.run_id }}"
+        run: |
+          echo "Running cycle as tier $TIER triggered by $TRIGGER"
+          # The agent reads manuals, does work, files results, signs guest book
+          python3 scripts/runner-cycle.py \
+            --tier "$TIER" \
+            --trigger "$TRIGGER" \
+            --agent "$AGENT_NAME" || true
+
+      - name: File results into PLATO rooms
+        if: always()
+        run: |
+          if [ -d results ]; then
+            python3 scripts/file-to-room.py --batch results/*.json || true
+          fi
+
+      - name: Sign guest book and push
+        if: always()
+        run: |
+          git config user.name "purplepincher-runner"
+          git config user.email "runner@purplepincher.shell"
+          RUN_ID="${{ github.run_id }}"
+          DATE=$(date -u +%Y-%m-%dT%H:%MZ)
+          echo "" >> GUEST-BOOK.md
+          echo "### runner-$RUN_ID — $DATE" >> GUEST-BOOK.md
+          echo "*Automated cycle: ${{ github.event_name }} (tier ${{ needs.check-trust.outputs.tier }})*" >> GUEST-BOOK.md
+          git add -A
+          git diff --cached --quiet || git commit -m "🤖 Runner #$RUN_ID: cycle complete"
+          git push
+
+  summarize-forks:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan forks and generate digest
+        run: |
+          python3 scripts/summary-agent.py \
+            --scan-forks \
+            --create-digest \
+            --output digest/ || true
+
+      - name: File digest into developer's manual
+        if: always()
+        run: |
+          if [ -d digest ]; then
+            python3 scripts/file-to-room.py \
+              --room developers-manual \
+              --batch digest/*.json || true
+          fi
+
+      - name: Push digest
+        if: always()
+        run: |
+          git config user.name "purplepincher-summary"
+          git config user.email "summary@purplepincher.shell"
+          git add -A
+          git diff --cached --quiet || git commit -m "📊 Fork digest: $(date -u +%Y-%m-%d)"
+          git push

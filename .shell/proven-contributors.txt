@@ -1,0 +1,4 @@
+# Proven contributors (Tier 2)
+# Added by summary agent when forks produce worth-while commits
+# Format: github_username
+# (empty — community will fill this)

@@ -1,0 +1,4 @@
+# Trusted fleet agents and contributors
+# Format: github_username
+SuperInstance
+lucineer
